@@ -41,6 +41,19 @@ def openrouter_fill_payload(
     if response_format:
         payload["response_format"] = response_format
 
+    # OpenRouter's `models` list is tried after the primary `model` route when
+    # that route is down, rate-limited, or rejected. Preserve order while
+    # removing duplicates and the primary model itself.
+    raw_fallbacks = getattr(model, "openrouter_fallback_models", None)
+    if isinstance(raw_fallbacks, (list, tuple)):
+        fallbacks: list[str] = []
+        for candidate in raw_fallbacks:
+            if (isinstance(candidate, str) and candidate
+                    and candidate != model.model_id and candidate not in fallbacks):
+                fallbacks.append(candidate)
+        if fallbacks:
+            payload["models"] = fallbacks
+
     # Many OpenRouter providers don't support forced tool_choice values
     # ("required" or {"type":"function","function":{...}}). Fall back to
     # "auto" for non-OpenAI/non-GLM models so the request doesn't 404.

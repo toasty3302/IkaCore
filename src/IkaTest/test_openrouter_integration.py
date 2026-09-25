@@ -1,5 +1,8 @@
 """Tests for OpenRouter API integration."""
 
+from types import SimpleNamespace
+
+from IkaCore.agent_chat_support import AgentModelFactoryMixin
 from IkaModel.base import AgentTool, BareBoneModel, ToolArgs
 from IkaModel.chat_helpers_common import build_provider_request
 from IkaModel.openrouter.chat_helpers_openrouter import build_openrouter_request, parse_openrouter_response
@@ -77,6 +80,52 @@ class TestOpenRouterPayloadBuilder:
 
         assert payload["plugins"] == [{"id": "web"}]
         assert payload["response_format"] == {"type": "json_object"}
+
+    def test_model_fallbacks_preserve_order_and_remove_primary_and_duplicates(self):
+        model = BareBoneModel(
+            model_id="deepseek/deepseek-chat",
+            api_key="test-key",
+            api_url="https://openrouter.ai/api/v1/chat/completions",
+            suppress_init_output=True,
+        )
+        model.openrouter_fallback_models = (
+            "deepseek/deepseek-chat",
+            "deepseek/deepseek-v3.2",
+            "deepseek/deepseek-v3.2",
+            "deepseek/deepseek-v4.1-flash",
+        )
+
+        payload = openrouter_fill_payload(
+            model, [{"role": "user", "content": "Hello"}], None,
+        )
+
+        assert payload["model"] == "deepseek/deepseek-chat"
+        assert payload["models"] == [
+            "deepseek/deepseek-v3.2",
+            "deepseek/deepseek-v4.1-flash",
+        ]
+
+    def test_ikacore_factory_propagates_openrouter_fallbacks(self):
+        factory = SimpleNamespace(
+            model_id="deepseek/deepseek-chat",
+            api_key="test-key",
+            api_url="https://openrouter.ai/api/v1/chat/completions",
+            prompt="prompt",
+            max_tokens=1000,
+            temperature=0,
+            name="reasoner",
+            reasoning_effort=None,
+            use_responses_api=True,
+            openrouter_fallback_models=("deepseek/deepseek-v3.2",),
+        )
+
+        model = AgentModelFactoryMixin.get_barebone(
+            factory, "system", [], suppress_init_output=True,
+        )
+
+        assert model.openrouter_fallback_models == (
+            "deepseek/deepseek-v3.2",
+        )
 
     def test_non_openai_routes_downgrade_forced_tool_choice_to_auto(self):
         agent_end = AgentTool(

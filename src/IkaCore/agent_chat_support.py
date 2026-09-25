@@ -94,6 +94,16 @@ class AgentModelFactoryMixin:
         )
         model.agent_tools = agent_tools
         model._current_step = 0
+        # Provider-specific request options live on the agent so callers can
+        # configure IkaBaseAgent without replacing the generic model factory.
+        # Copy only known OpenRouter extensions; other providers ignore them.
+        for attribute in (
+            "openrouter_plugins",
+            "openrouter_response_format",
+            "openrouter_fallback_models",
+        ):
+            if hasattr(self, attribute):
+                setattr(model, attribute, getattr(self, attribute))
         return model
 
 
