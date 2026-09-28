@@ -30,7 +30,7 @@ How the wire works
 - The codex backend rejects ``stream: false``; IkaCore handles SSE collection
   internally and surfaces a single final response, so callers don't see
   streaming events.
-- ``model_id`` must be a codex-known slug: ``gpt-5.6-sol``,
+- ``model_id`` must be a codex-known slug: ``gpt-6-sol``, ``gpt-5.6-sol``,
   ``gpt-5.6-terra``, ``gpt-5.5``, ``gpt-5.4``, ``gpt-5.4-mini``,
   ``gpt-5.3-codex``, ``gpt-5.2``, ``gpt-5.2-codex``.
 - ``reasoning_effort`` accepts the codex-extended set

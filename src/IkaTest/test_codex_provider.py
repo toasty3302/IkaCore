@@ -21,7 +21,7 @@ geturl = AgentHelpersMixin.geturl
 
 def test_current_codex_models_are_registered():
     """Current Codex-only GPT-5.6 model slugs should be accepted without warnings."""
-    assert {"gpt-5.6-sol", "gpt-5.6-terra"} <= CODEX_KNOWN_MODELS
+    assert {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-sol"} <= CODEX_KNOWN_MODELS
 
 
 # ----------------------------------------------------------------------
