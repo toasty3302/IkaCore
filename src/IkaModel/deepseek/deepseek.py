@@ -28,38 +28,112 @@ def _append_deepseek_context(api_messages: List[Dict[str, Any]], message_history
         api_messages.append({"role": "assistant", "content": message_history["summary"]["message"]})
 
 
-def _append_deepseek_history(api_messages: List[Dict[str, Any]], message_history: Dict[str, Any]) -> None:
+def _deepseek_history_messages(message_history: Dict[str, Any]) -> List[Dict[str, Any]]:
+    history_messages: List[Dict[str, Any]] = []
     for msg_id in message_history["messages"]:
         msg = message_history["messages"][msg_id]
         msg_type = msg.get("type", "assistant")
         raw = msg.get("message", "")
         if msg_type in {"assistant_with_tools", "tool"}:
             try:
-                api_messages.append(json.loads(raw))
+                decoded = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 continue
+            if isinstance(decoded, dict):
+                history_messages.append(decoded)
         else:
             assistant_entry = {"role": "assistant", "content": raw if isinstance(raw, str) else str(raw)}
             reasoning_text = msg.get("reasoning_content")
             if reasoning_text:
                 assistant_entry["reasoning_content"] = reasoning_text
-            api_messages.append(assistant_entry)
+            history_messages.append(assistant_entry)
+    return history_messages
 
 
-def _append_live_messages(api_messages: List[Dict[str, Any]], messages: List[Dict[str, Any]], first_input_content: str) -> None:
+def _live_messages(messages: List[Dict[str, Any]], first_input_content: str) -> List[Dict[str, Any]]:
+    live_messages: List[Dict[str, Any]] = []
     skip_first = bool(first_input_content and messages and _message_content(messages[0]) == first_input_content)
     for index, msg in enumerate(messages):
         if skip_first and index == 0:
             continue
         if isinstance(msg, dict):
             if "role" in msg and "content" in msg:
-                api_messages.append(msg)
+                live_messages.append(msg)
             elif "content" in msg:
-                api_messages.append({"role": "user", "content": msg["content"]})
+                live_messages.append({"role": "user", "content": msg["content"]})
             else:
-                api_messages.append({"role": "user", "content": str(msg)})
+                live_messages.append({"role": "user", "content": str(msg)})
         else:
-            api_messages.append({"role": "user", "content": str(msg)})
+            live_messages.append({"role": "user", "content": str(msg)})
+    return live_messages
+
+
+def _assert_tool_ids_do_not_conflict(
+    history_messages: List[Dict[str, Any]], live_messages: List[Dict[str, Any]],
+) -> None:
+    """Reject divergent records that claim the same provider tool-call id."""
+    def records(source: List[Dict[str, Any]]) -> Dict[tuple[str, str], str]:
+        found: Dict[tuple[str, str], str] = {}
+        for message in source:
+            tool_call_id = message.get("tool_call_id")
+            if isinstance(tool_call_id, str) and tool_call_id:
+                key = ("result", tool_call_id)
+                encoded = json.dumps(message, sort_keys=True, separators=(",", ":"))
+                if key in found and found[key] != encoded:
+                    raise ValueError(f"conflicting DeepSeek tool result id: {tool_call_id}")
+                found[key] = encoded
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                call_id = call.get("id")
+                if not isinstance(call_id, str) or not call_id:
+                    continue
+                key = ("call", call_id)
+                # Compare the complete assistant record, including the hidden
+                # reasoning DeepSeek requires on a thinking continuation.  An
+                # identical function call with a missing/different chain is
+                # still a conflicting replay and must not be silently merged.
+                encoded = json.dumps(message, sort_keys=True, separators=(",", ":"))
+                if key in found and found[key] != encoded:
+                    raise ValueError(f"conflicting DeepSeek tool call id: {call_id}")
+                found[key] = encoded
+        return found
+
+    historical = records(history_messages)
+    live = records(live_messages)
+    for key in historical.keys() & live.keys():
+        if historical[key] != live[key]:
+            raise ValueError(f"conflicting DeepSeek {key[0]} id: {key[1]}")
+
+
+def _history_prefix_before_live_overlap(
+    history_messages: List[Dict[str, Any]], live_messages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Return only history preceding the current live conversation.
+
+    IkaCore records every tool exchange in both containers.  The live list is
+    authoritative for the current chat round because it also carries user
+    warnings in their exact position.  Prior stages exist only in history, so
+    retain the prefix before the longest history suffix already represented in
+    live messages.
+    """
+    _assert_tool_ids_do_not_conflict(history_messages, live_messages)
+    for start in range(len(history_messages)):
+        candidate = history_messages[start:]
+        live_index = 0
+        for historical in candidate:
+            while (live_index < len(live_messages)
+                   and live_messages[live_index] != historical):
+                live_index += 1
+            if live_index == len(live_messages):
+                break
+            live_index += 1
+        else:
+            return history_messages[:start]
+    return history_messages
 
 
 def _deepseek_max_tokens(model: Any) -> int:
@@ -76,8 +150,10 @@ def deepseek_fill_payload(
     message_history = message_history or _default_message_history()
     api_messages: List[Dict[str, Any]] = []
     _append_deepseek_context(api_messages, message_history)
-    _append_deepseek_history(api_messages, message_history)
-    _append_live_messages(api_messages, messages, message_history["first_input"]["message"])
+    historical = _deepseek_history_messages(message_history)
+    live = _live_messages(messages, message_history["first_input"]["message"])
+    api_messages.extend(_history_prefix_before_live_overlap(historical, live))
+    api_messages.extend(live)
 
     payload = {
         "model": model.model_id,

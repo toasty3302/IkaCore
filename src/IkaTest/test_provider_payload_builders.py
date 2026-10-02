@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from IkaModel.anthropic.claude import anthropic_fill_payload
 from IkaModel.base import AgentTool, ToolArgs
 from IkaModel.deepseek.deepseek import deepseek_fill_payload
@@ -155,6 +157,80 @@ def test_deepseek_payload_replays_valid_history_skips_bad_history_and_caps_token
     assert payload["max_tokens"] == 32768
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["tools"][0]["function"]["name"] == "lookup"
+
+
+def test_deepseek_payload_merges_live_tool_round_without_duplicate_history():
+    model = _model(model_id="deepseek-flash")
+    history = _message_history(system="system", first_input="first")
+
+    prior_call = {
+        "role": "assistant", "content": "", "reasoning_content": "prior",
+        "tool_calls": [{
+            "id": "call-prior", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":"old"}'},
+        }],
+    }
+    prior_result = {
+        "role": "tool", "tool_call_id": "call-prior", "content": "old-result",
+    }
+    current_call = {
+        "role": "assistant", "content": "", "reasoning_content": "current",
+        "tool_calls": [{
+            "id": "call-current", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":"new"}'},
+        }],
+    }
+    current_result = {
+        "role": "tool", "tool_call_id": "call-current", "content": "new-result",
+    }
+    for index, message in enumerate(
+            (prior_call, prior_result, current_call, current_result)):
+        history["messages"][str(index)] = {
+            "type": "tool" if message["role"] == "tool" else "assistant_with_tools",
+            "message": json.dumps(message), "tokens": 1,
+        }
+
+    payload = deepseek_fill_payload(model, [
+        {"role": "user", "content": "current-stage"},
+        current_call,
+        current_result,
+        {"role": "user", "content": "retry warning"},
+    ], history)
+
+    messages = payload["messages"]
+    assert sum(message == prior_call for message in messages) == 1
+    assert sum(message == prior_result for message in messages) == 1
+    assert sum(message == current_call for message in messages) == 1
+    assert sum(message == current_result for message in messages) == 1
+    assert messages.index(current_call) < messages.index(current_result)
+    assert messages.index(current_result) < messages.index(
+        {"role": "user", "content": "retry warning"})
+
+
+def test_deepseek_payload_rejects_conflicting_live_tool_call_id():
+    model = _model(model_id="deepseek-flash")
+    history = _message_history(first_input="first")
+    historical_call = {
+        "role": "assistant", "content": "", "tool_calls": [{
+            "id": "call-shared", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":"old"}'},
+        }],
+    }
+    history["messages"]["call"] = {
+        "type": "assistant_with_tools",
+        "message": json.dumps(historical_call), "tokens": 1,
+    }
+    conflicting_call = {
+        "role": "assistant", "content": "", "tool_calls": [{
+            "id": "call-shared", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":"changed"}'},
+        }],
+    }
+
+    with pytest.raises(ValueError, match="conflicting DeepSeek call id"):
+        deepseek_fill_payload(model, [
+            {"role": "user", "content": "first"}, conflicting_call,
+        ], history)
 
 
 def test_anthropic_payload_replays_history_normalizes_assistant_tools_and_controls_parallel_use():
